@@ -1,7 +1,7 @@
 name: strongR-frida
 
 on:
-  workflow_dispatch: # Sử dụng nút "Run workflow" thủ công để ép build
+  workflow_dispatch: # Chạy thủ công bằng nút "Run workflow"
 
 jobs: 
   check_version:
@@ -23,55 +23,66 @@ jobs:
   android_build:
     runs-on: ubuntu-22.04
     needs: [check_version]
-    # Đã bỏ dòng 'if' để chắc chắn job này luôn chạy
 
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Setup Android NDK
       id: setup-ndk
       uses: nttld/setup-ndk@v1.0.6
       with:
         ndk-version: r25b
-    
-    - name: install dependencies
+
+    - name: Install dependencies
       run: |
         sudo apt-get update
         sudo apt-get install build-essential ninja-build gcc-multilib g++-multilib flex bison ruby python3-requests python3-setuptools python3-pip -y
+        python3 -m pip install lief
 
-    - name: build frida for Android (Focus ARM64)
+    - name: Build strongR-frida (ARM64)
       shell: bash
       run: |
+        # 1. Cấu hình Git
         git config --global user.name "github-actions"
         git config --global user.email "github-actions@github.com"
         
-        # Clone Patch repo
-        git clone ${{ secrets.PATCH_REPO }} Patchs
+        # 2. Clone Patch repo (Sử dụng đường dẫn tuyệt đối sau này)
+        echo "--- Cloning Patches ---"
+        git clone ${{ secrets.PATCH_REPO }} MyPatches || { echo "Không tìm thấy Patch Repo. Hãy kiểm tra Secret PATCH_REPO"; exit 1; }
+        PATCH_ROOT=$(realpath MyPatches/strongR-frida)
         
-        export ANDROID_NDK_ROOT=${{ steps.setup-ndk.outputs.ndk-path }}
+        # 3. Clone Frida Source
+        echo "--- Cloning Frida Source (${{ needs.check_version.outputs.FRIDA_VERSION }}) ---"
         git clone --recurse-submodules https://github.com/frida/frida
         cd frida
         
-        # Apply Patches
-        for path in ../Patchs/strongR-frida/*; do
+        # 4. Apply Patches
+        echo "--- Applying Patches from $PATCH_ROOT ---"
+        for path in "$PATCH_ROOT"/*; do
           if [ -d "$path" ]; then
-            name=$(basename $path)
-            cd subprojects/$name
-            git am ../../../Patchs/strongR-frida/$name/*.patch || echo "Skip patch error"
-            cd ../..
+            subproject=$(basename "$path")
+            if [ -d "subprojects/$subproject" ]; then
+              echo "Patching subprojects/$subproject..."
+              cd "subprojects/$subproject"
+              git am "$path"/*.patch || echo "Cảnh báo: Patch lỗi tại $subproject, bỏ qua..."
+              cd ../..
+            fi
           fi
         done
         
-        # Chỉ build ARM64 để tránh hết RAM/Disk trên GitHub Action
+        # 5. Biên dịch (Chỉ ARM64 để tránh crash máy ảo)
+        export ANDROID_NDK_ROOT=${{ steps.setup-ndk.outputs.ndk-path }}
+        echo "--- Starting Build ---"
         ./configure --host=android-arm64
         make
         
-        mkdir -p ../output/
-        cp subprojects/frida-core/server/frida-server ../output/hluda-server-arm64
-        gzip ../output/hluda-server-arm64
+        # 6. Gom file kết quả
+        mkdir -p ../dist
+        cp subprojects/frida-core/server/frida-server ../dist/hluda-server-arm64
+        gzip ../dist/hluda-server-arm64
 
-    - name: Upload Artifact
+    - name: Upload Frida Server Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: strongR-frida-arm64
-        path: output/hluda-server-arm64.gz
+        name: strongR-frida-v${{ needs.check_version.outputs.FRIDA_VERSION }}
+        path: dist/hluda-server-arm64.gz
