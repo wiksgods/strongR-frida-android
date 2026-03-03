@@ -66,27 +66,32 @@ jobs:
           fi
         done
         
-        # 4. Biên dịch (Sử dụng target 'core' thay vì 'server')
+        # 4. Cấu hình môi trường
         export ANDROID_NDK_ROOT=${{ steps.setup-ndk.outputs.ndk-path }}
-        echo "--- Bắt đầu Build (Target: core) ---"
+        echo "--- Đang cấu hình (Configure) ---"
         ./configure --host=android-arm64
         
-        # Build core sẽ bao gồm cả frida-server
-        make core-android-arm64
+        # 5. BIÊN DỊCH TRỰC TIẾP BẰNG NINJA (Fix triệt để)
+        # Xác định đường dẫn Ninja và thư mục build
+        NINJA_BIN=$(find "$FRIDA_ROOT/deps" -name ninja -type f | head -n 1)
+        BUILD_DIR="$FRIDA_ROOT/build/frida-android-arm64"
         
-        # 5. Tìm kiếm và Đóng gói
+        echo "Sử dụng Ninja tại: $NINJA_BIN"
+        echo "Thư mục Build: $BUILD_DIR"
+        
+        # Lệnh build trực tiếp mục tiêu 'frida-server' từ file build.ninja
+        $NINJA_BIN -C "$BUILD_DIR" subprojects/frida-core/server/frida-server
+        
+        # 6. Kiểm tra và Đóng gói
         mkdir -p ../dist
-        echo "--- Đang tìm file frida-server ---"
-        # Tìm file binary frida-server trong thư mục build
-        SERVER_PATH=$(find build/ -name frida-server -type f | grep "android-arm64" | head -n 1)
+        SERVER_PATH="$BUILD_DIR/subprojects/frida-core/server/frida-server"
         
-        if [ -z "$SERVER_PATH" ]; then
-          echo "Lỗi: Không tìm thấy frida-server. Liệt kê file để kiểm tra:"
-          find build/ -name "frida-server"
-          exit 1
+        if [ ! -f "$SERVER_PATH" ]; then
+            echo "Lỗi: Không tìm thấy file binary sau khi build!"
+            find "$BUILD_DIR" -name "frida-server"
+            exit 1
         fi
         
-        echo "Đã tìm thấy tại: $SERVER_PATH"
         cp "$SERVER_PATH" "../dist/hluda-server-arm64"
         gzip "../dist/hluda-server-arm64"
 
