@@ -1,9 +1,9 @@
 name: strongR-frida-auto-full-fix
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Chạy thủ công
   schedule:
-    - cron: "0 0 * * *"
+    - cron: "0 0 * * *" # Tự động kiểm tra bản mới hàng ngày
 
 jobs: 
   check_version:
@@ -42,15 +42,16 @@ jobs:
         git config --global user.name "github-actions"
         git config --global user.email "github-actions@github.com"
         
-        # 1. Tải bộ Patch từ nguồn hzzheyang
+        # 1. Tải bộ Patch tàng hình
         git clone https://github.com/hzzheyang/strongR-frida-android.git ExternalPatch
         PATCH_ROOT=$(realpath ExternalPatch/strongR-frida)
         
-        # 2. Clone Frida Source bản mới nhất
+        # 2. Clone Frida Source (Sử dụng tag mới nhất)
         git clone --depth 1 --branch ${{ needs.check_version.outputs.FRIDA_VERSION }} --recurse-submodules https://github.com/frida/frida
         cd frida
+        FRIDA_ROOT=$(pwd)
         
-        # 3. Áp dụng các bản vá tàng hình
+        # 3. Áp dụng các bản vá (StrongR/Hluda)
         echo "--- Đang áp dụng Patches ---"
         for path in "$PATCH_ROOT"/*; do
           if [ -d "$path" ]; then
@@ -60,32 +61,30 @@ jobs:
               cd "subprojects/$subproject"
               git am --abort 2>/dev/null || true
               git am "$path"/*.patch || echo "Bỏ qua lỗi patch cho $subproject"
-              cd ../..
+              cd "$FRIDA_ROOT"
             fi
           fi
         done
         
-        # 4. Cấu hình và Biên dịch
+        # 4. Cấu hình môi trường
         export ANDROID_NDK_ROOT=${{ steps.setup-ndk.outputs.ndk-path }}
         echo "--- Đang cấu hình môi trường build ---"
         ./configure --host=android-arm64
         
-        # Tự động tìm đường dẫn Ninja mà Frida vừa tải về
-        NINJA_BIN=$(find $(pwd)/deps -name ninja -type f | head -n 1)
-        if [ -z "$NINJA_BIN" ]; then
-          echo "Không tìm thấy ninja trong deps, thử dùng ninja hệ thống..."
-          NINJA_BIN=$(which ninja)
-        fi
+        # Xác định đường dẫn tuyệt đối để tránh lỗi 'No such file or directory'
+        NINJA_BIN=$(find "$FRIDA_ROOT/deps" -name ninja -type f | head -n 1)
+        BUILD_DIR="$FRIDA_ROOT/build/frida-android-arm64"
+        
         echo "Sử dụng Ninja tại: $NINJA_BIN"
+        echo "Thư mục build: $BUILD_DIR"
         
-        # Chỉ build frida-server để tránh quá tải RAM
-        cd subprojects/frida-core
-        $NINJA_BIN -C ../../build/frida-android-arm64 server
+        # 5. Biên dịch mục tiêu frida-server
+        $NINJA_BIN -C "$BUILD_DIR" frida-core/server
         
-        # 5. Đóng gói kết quả
-        mkdir -p ../../../dist
-        cp ../../build/frida-android-arm64/server/frida-server ../../../dist/hluda-server-arm64
-        gzip ../../../dist/hluda-server-arm64
+        # 6. Đóng gói kết quả
+        mkdir -p ../dist
+        cp "$BUILD_DIR/frida-core/server/frida-server" "../dist/hluda-server-arm64"
+        gzip "../dist/hluda-server-arm64"
 
     - name: Upload Frida Server Artifact
       uses: actions/upload-artifact@v4
