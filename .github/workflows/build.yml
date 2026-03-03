@@ -1,9 +1,9 @@
-name: strongR-frida-auto-full-fix
+name: strongR-frida-final-fix
 
 on:
-  workflow_dispatch: # Chạy thủ công
+  workflow_dispatch:
   schedule:
-    - cron: "0 0 * * *" # Tự động kiểm tra bản mới hàng ngày
+    - cron: "0 0 * * *"
 
 jobs: 
   check_version:
@@ -34,7 +34,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install build-essential ninja-build gcc-multilib g++-multilib flex bison ruby python3-requests python3-setuptools python3-pip jq -y
-        python3 -m pip install lief
+        python3 -m pip install lief meson
 
     - name: Build strongR-frida (ARM64)
       shell: bash
@@ -42,48 +42,51 @@ jobs:
         git config --global user.name "github-actions"
         git config --global user.email "github-actions@github.com"
         
-        # 1. Tải bộ Patch tàng hình
+        # 1. Tải bộ Patch
         git clone https://github.com/hzzheyang/strongR-frida-android.git ExternalPatch
         PATCH_ROOT=$(realpath ExternalPatch/strongR-frida)
         
-        # 2. Clone Frida Source (Sử dụng tag mới nhất)
+        # 2. Clone Frida Source
         git clone --depth 1 --branch ${{ needs.check_version.outputs.FRIDA_VERSION }} --recurse-submodules https://github.com/frida/frida
         cd frida
         FRIDA_ROOT=$(pwd)
         
-        # 3. Áp dụng các bản vá (StrongR/Hluda)
+        # 3. Áp dụng Patches
         echo "--- Đang áp dụng Patches ---"
         for path in "$PATCH_ROOT"/*; do
           if [ -d "$path" ]; then
             subproject=$(basename "$path")
             if [ -d "subprojects/$subproject" ]; then
-              echo "Patching cho subprojects/$subproject..."
+              echo "Patching cho $subproject..."
               cd "subprojects/$subproject"
               git am --abort 2>/dev/null || true
-              git am "$path"/*.patch || echo "Bỏ qua lỗi patch cho $subproject"
+              git am "$path"/*.patch || echo "Skip patch error"
               cd "$FRIDA_ROOT"
             fi
           fi
         done
         
-        # 4. Cấu hình môi trường
+        # 4. Cấu hình và Biên dịch (Sử dụng lệnh trực tiếp của Frida toolchain)
         export ANDROID_NDK_ROOT=${{ steps.setup-ndk.outputs.ndk-path }}
-        echo "--- Đang cấu hình môi trường build ---"
+        echo "--- Bắt đầu Build ---"
+        
+        # Lệnh này sẽ tự động tạo thư mục build và chạy Ninja chuẩn nhất
         ./configure --host=android-arm64
         
-        # Xác định đường dẫn tuyệt đối để tránh lỗi 'No such file or directory'
-        NINJA_BIN=$(find "$FRIDA_ROOT/deps" -name ninja -type f | head -n 1)
-        BUILD_DIR="$FRIDA_ROOT/build/frida-android-arm64"
+        # Thay vì dùng Ninja trực tiếp, ta dùng lệnh make của Frida (nó sẽ gọi Ninja đúng cách)
+        # Chỉ build đúng thành phần server để tránh lỗi
+        make server-android-arm64
         
-        echo "Sử dụng Ninja tại: $NINJA_BIN"
-        echo "Thư mục build: $BUILD_DIR"
-        
-        # 5. Biên dịch mục tiêu frida-server
-        $NINJA_BIN -C "$BUILD_DIR" frida-core/server
-        
-        # 6. Đóng gói kết quả
+        # 5. Kiểm tra và Đóng gói
         mkdir -p ../dist
-        cp "$BUILD_DIR/frida-core/server/frida-server" "../dist/hluda-server-arm64"
+        # Tìm file server trong thư mục build (vị trí có thể thay đổi nên dùng find)
+        SERVER_PATH=$(find build/ -name frida-server -type f | grep android-arm64 | head -n 1)
+        if [ -z "$SERVER_PATH" ]; then
+          echo "Lỗi: Không tìm thấy file frida-server sau khi build!"
+          exit 1
+        fi
+        
+        cp "$SERVER_PATH" "../dist/hluda-server-arm64"
         gzip "../dist/hluda-server-arm64"
 
     - name: Upload Frida Server Artifact
